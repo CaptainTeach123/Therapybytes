@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TherapyBytes – DSM-5 Guided Therapy Notes</title>
+<meta name="description" content="Free, private, in-browser tool that helps clinicians write best-practice progress notes (SOAP, DAP, BIRP, GIRP) guided by the client's DSM-5-TR diagnosis.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f766e'/%3E%3Cpath d='M18 20h28v6H35v20h-6V26H18z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<a class="skip" href="#panel">Skip to form</a>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">T</span>
+    <div>
+      <h1>TherapyBytes</h1>
+      <p>DSM-5-TR guided progress notes</p>
+    </div>
+  </div>
+  <div class="actions">
+    <label class="fmt">
+      <span>Note format</span>
+      <select id="format" aria-label="Note format">
+        <option value="soap">SOAP</option>
+        <option value="dap">DAP</option>
+        <option value="birp">BIRP</option>
+        <option value="girp">GIRP</option>
+        <option value="narrative">Narrative</option>
+      </select>
+    </label>
+    <button class="btn" id="btnNext" title="Keep client, diagnoses, goals, and measures; clear session-specific content">Next session</button>
+    <button class="btn ghost" id="btnClear" title="Erase everything stored in this browser">Clear all</button>
+  </div>
+</header>
+
+<div class="banner" role="note">
+  <strong>Privacy:</strong> everything stays in your browser (no server, no tracking). Use a client ID or initials, not names or other identifiers, and paste the final note into your EHR.
+  <button class="linklike" id="btnAbout">About &amp; limits</button>
+</div>
+
+<main class="layout">
+  <nav class="steps" id="steps" aria-label="Note sections"></nav>
+
+  <section class="panel" id="panel" tabindex="-1" aria-live="polite"></section>
+
+  <aside class="side">
+    <div class="tabs" role="tablist" aria-label="Output">
+      <button role="tab" id="tab-preview" aria-selected="true" aria-controls="pane-preview" data-pane="preview">Note</button>
+      <button role="tab" id="tab-check" aria-selected="false" aria-controls="pane-check" data-pane="check">Quality check <span id="scoreBadge" class="badge">0</span></button>
+      <button role="tab" id="tab-tips" aria-selected="false" aria-controls="pane-tips" data-pane="tips">Best practices</button>
+    </div>
+
+    <div class="pane" id="pane-preview" role="tabpanel" aria-labelledby="tab-preview">
+      <div class="pane-actions">
+        <button class="btn primary" id="btnCopy">Copy note</button>
+        <button class="btn" id="btnDownload">Download .txt</button>
+        <button class="btn" id="btnPrint">Print</button>
+      </div>
+      <div id="notePreview" class="note" aria-label="Generated note"></div>
+    </div>
+
+    <div class="pane" id="pane-check" role="tabpanel" aria-labelledby="tab-check" hidden>
+      <div id="checkResults"></div>
+    </div>
+
+    <div class="pane" id="pane-tips" role="tabpanel" aria-labelledby="tab-tips" hidden>
+      <div id="tipsContent"></div>
+    </div>
+  </aside>
+</main>
+
+<dialog id="aboutDialog">
+  <form method="dialog">
+    <h2>About TherapyBytes</h2>
+    <p>TherapyBytes is a free documentation aid. Pick a client's DSM-5-TR diagnosis and the app surfaces symptom prompts, evidence-based interventions, outcome measures, goal templates, and documentation tips, then assembles a structured note and checks it against common best practices.</p>
+    <h3>Important limits</h3>
+    <ul>
+      <li>It does <strong>not</strong> diagnose. Symptom lists are brief <em>paraphrased</em> prompts, not the DSM-5-TR criteria. Diagnose from the DSM-5-TR itself.</li>
+      <li>Verify ICD-10-CM codes and CPT/time rules against current manuals and payer requirements.</li>
+      <li>Suggestions are starting points. Your clinical judgment, supervision, ethics code, and state law govern what goes in a record.</li>
+      <li>Not legal advice. Progress notes are part of the legal medical record; HIPAA "psychotherapy notes" are a separate, optional category kept apart from the record.</li>
+    </ul>
+    <h3>Your data</h3>
+    <p>Drafts are saved only in this browser's local storage. Nothing is sent anywhere. Use <em>Clear all</em> on shared computers. Avoid entering names or other identifiers.</p>
+    <menu><button class="btn primary" value="close">Close</button></menu>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="js/data.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

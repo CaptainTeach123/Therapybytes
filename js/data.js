@@ -669,7 +669,6 @@ const PROGRESS_OPTS = ['Not addressed this session', 'Regression', 'No progress'
 const SUBJECTIVE_STARTERS = [
   'Client reported that since the last session,',
   'Client described ',
-  'In the client\'s words: "',
   'Client identified the main focus for today as ',
   'Client reported sleep, appetite, and energy as ',
   'Client reported substance use since last session: ',

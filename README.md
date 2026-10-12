@@ -6,6 +6,11 @@ A free, private, in-browser tool that helps clinicians write best-practice psych
 
 ## What it does
 
+**Guided questions (default):** the clinician answers one short question at a time — mostly taps, with a few short text answers — and the note writes itself in the side panel. Questions adapt to the answers: the selected diagnosis drives the symptom questions, intervention choices, suggested measures and goals; positive suicide-risk answers add follow-ups; each intervention chosen gets a "what specifically did you do?" question. "Draft from my answers" buttons compose the clinical impression and medical-necessity statement from what was entered, for the clinician to review and edit. The last screen shows the finished note, a completeness score, and an "Answer this →" link for each gap. Number keys pick answers; Enter moves on.
+
+**Full form:** the same content as a step-by-step form, for clinicians who prefer to see everything at once. Both modes share the same data, so you can switch at any time.
+
+
 1. **Pick the diagnosis** (≈55 common DSM-5-TR diagnoses with ICD-10-CM code/specifier selection).
 2. The app then tailors the rest of the note to that diagnosis:
    - symptom-status prompts (present / improved / worsened / not present vs. baseline)

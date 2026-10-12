@@ -45,7 +45,7 @@ function blank() {
     format: 'soap',
     session: { date: today(), start: '', end: '', cpt: '90834', modality: MODALITIES[0], participants: PARTICIPANTS[0], clientId: '', sessionNum: '', practitioner: '' },
     dx: [],
-    subj: { report: '' },
+    subj: { since: '', quote: '', events: '', focus: '', report: '' },
     mse: { mood: '' },
     obsNotes: '',
     measures: [],
@@ -71,19 +71,22 @@ function load() {
       if (s[k] === undefined) continue;
       b[k] = (b[k] && typeof b[k] === 'object' && !Array.isArray(b[k])) ? Object.assign(b[k], s[k]) : s[k];
     }
-    return { S: b, step: STEPS.some(x => x.id === saved.step) ? saved.step : 'session' };
+    return { S: b, step: STEPS.some(x => x.id === saved.step) ? saved.step : 'session', mode: saved.mode === 'form' ? 'form' : 'interview', qid: saved.qid || null };
   } catch (_) { return null; }
 }
 
 const loaded = load();
 let S = loaded ? loaded.S : blank();
 let step = loaded ? loaded.step : 'session';
+let mode = loaded ? loaded.mode : 'interview';   // 'interview' (guided questions) or 'form'
+let qid = loaded ? loaded.qid : null;            // current interview question id
+let qIndex = 0;
 
 let saveTimer;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(KEY, JSON.stringify({ S, step })); } catch (_) { /* storage unavailable */ }
+    try { localStorage.setItem(KEY, JSON.stringify({ S, step, mode, qid })); } catch (_) { /* storage unavailable */ }
   }, 250);
 }
 
@@ -110,6 +113,10 @@ function setPath(o, path, val) {
 
 const lcFirst = s => (/^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
 const trim = s => (s || '').trim();
+const capFirst = s => (s ? s[0].toUpperCase() + s.slice(1) : s);
+// Capitalize and make sure free text ends with terminal punctuation.
+const sentence = s => { const t = capFirst(trim(s)); return !t || /[.!?"”)]$/.test(t) ? t : t + '.'; };
+const joinList = a => (a.length <= 1 ? (a[0] || '') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`);
 
 function fmtDate(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
@@ -192,7 +199,19 @@ function blockDx() {
   return `Diagnoses:\n${lines.join('\n')}`;
 }
 
-function blockReport() { return trim(S.subj.report); }
+function blockReport() {
+  const s = S.subj;
+  const parts = [];
+  if (trim(s.since)) parts.push(sentence(s.since));
+  if (trim(s.quote)) {
+    const qt = trim(s.quote).replace(/^["“']+|["”']+$/g, '');
+    parts.push(`In the client's words: "${/[.!?]$/.test(qt) ? qt : qt + '.'}"`);
+  }
+  if (trim(s.events)) parts.push(`Notable events since last session: ${trim(s.events).split(/;\s*/).map(lcFirst).join('; ').replace(/[.;\s]*$/, '.')}`);
+  if (trim(s.focus)) parts.push(`Client identified today's focus as ${lcFirst(trim(s.focus)).replace(/[.!?]+$/, '')}.`);
+  if (trim(s.report)) parts.push(sentence(s.report));
+  return parts.join(' ');
+}
 
 function blockSx() {
   const out = [];
@@ -263,7 +282,7 @@ function blockGoals() {
   const lines = [];
   S.goals.forEach((g, i) => {
     if (!trim(g.text) || !g.progress || g.progress === PROGRESS_OPTS[0]) return;
-    lines.push(`${i + 1}. ${trim(g.text)}\n   Progress: ${g.progress}.${trim(g.comment) ? ' ' + trim(g.comment) : ''}`);
+    lines.push(`${i + 1}. ${trim(g.text)}\n   Progress: ${g.progress}.${trim(g.comment) ? ' ' + sentence(g.comment) : ''}`);
   });
   return lines.length ? `Treatment goals addressed:\n${lines.join('\n')}` : '';
 }
@@ -272,7 +291,9 @@ function blockImpression() { return trim(S.impression) ? `Clinical impression: $
 function blockFunc() {
   const f = S.func;
   const parts = [];
-  if (f.domains.length) parts.push(`Current symptoms continue to affect functioning in: ${f.domains.map(lcFirst).join(', ')}.`);
+  const doms = f.domains.map(d => lcFirst(d).replace(' / ', '/'));
+  // Skip the list when the rationale already names every domain (e.g., a drafted statement).
+  if (doms.length && !doms.every(d => trim(f.statement).toLowerCase().includes(d.toLowerCase()))) parts.push(`Current symptoms continue to affect functioning in: ${doms.join(', ')}.`);
   if (trim(f.statement)) parts.push(trim(f.statement));
   const rec = lookup(RECOMMENDATIONS, f.rec);
   if (rec && f.rec) parts.push(`Treatment recommendation: ${lcFirst(rec)}.`);
@@ -358,7 +379,7 @@ const PHI = [
 ];
 
 function freeText() {
-  const parts = [S.subj.report, S.mse.mood, S.obsNotes, S.risk.siDetail, S.risk.notes, S.intOther, S.response, S.impression, S.func.statement,
+  const parts = [S.subj.since, S.subj.quote, S.subj.events, S.subj.focus, S.subj.report, S.mse.mood, S.obsNotes, S.risk.siDetail, S.risk.notes, S.intOther, S.response, S.impression, S.func.statement,
     S.plan.focus, S.plan.homework, S.plan.coord, S.plan.change, S.plan.next];
   Object.values(S.int).forEach(i => i && i.on && parts.push(i.detail));
   S.goals.forEach(g => parts.push(g.comment));
@@ -406,10 +427,11 @@ function runChecks() {
   }
 
   // Report
-  const rl = len(S.subj.report);
+  const reportText = [S.subj.since, S.subj.events, S.subj.focus, S.subj.report].join(' ');
+  const rl = len(reportText) + len(S.subj.quote);
   if (!rl) c.push(bad('report', 'subj', 'No client report', 'Summarize what the client reported: key events since last session, concerns, and themes.'));
   else if (rl < 60) c.push(warn('report', 'subj', 'Client report is very brief', 'Add the main themes, relevant events, and when helpful a short direct quote.'));
-  else if (!/["“”]/.test(S.subj.report)) c.push(warn('report', 'subj', 'Consider a direct quote', 'A short quote in the client\'s own words adds authenticity and clinical meaning.'));
+  else if (!len(S.subj.quote) && !/["“”]/.test(reportText)) c.push(warn('report', 'subj', 'Consider a direct quote', 'A short quote in the client\'s own words adds authenticity and clinical meaning.'));
   else c.push(ok('report', 'subj', 'Client report documented', 'Includes the client\'s perspective.'));
 
   // MSE / observations
@@ -564,27 +586,22 @@ const VIEWS = {
         }).join('')}</fieldset>`;
     }).join('');
     return head('Client report & symptoms', 'Capture what the client reported in their words, and how diagnostic symptoms are doing compared with baseline.') +
-      field('What the client reported', 'subj.report', { type: 'textarea', tall: true, ph: 'Key events, concerns, themes since last session. Include brief direct quotes where meaningful.' }) +
-      `<div class="field"><span class="hint">Sentence starters:</span><div class="chips">${SUBJECTIVE_STARTERS.map(t => `<button type="button" class="chip" data-action="starter" data-target="subj.report" data-text="${esc(t)}">${esc(t.trim())}</button>`).join('')}</div></div>` +
+      field('How has the client been since the last session?', 'subj.since', { type: 'textarea', tall: true, ph: 'What the client reported: key concerns and themes since last session.' }) +
+      `<div class="field"><span class="hint">Sentence starters:</span><div class="chips">${SUBJECTIVE_STARTERS.map(t => `<button type="button" class="chip" data-action="starter" data-target="subj.since" data-text="${esc(t)}">${esc(t.trim())}</button>`).join('')}</div></div>` +
+      `<div class="grid2">${field('Direct quote <span class="hint">(optional)</span>', 'subj.quote', { ph: "e.g., I just can't get going" })}${field('Client\'s focus for today', 'subj.focus')}</div>` +
+      field('Notable events / stressors since last session', 'subj.events', { type: 'textarea' }) +
+      field('Additional client report <span class="hint">(optional)</span>', 'subj.report', { type: 'textarea' }) +
       (symptomBlocks || '<p class="callout">Select a diagnosis in the previous step to get symptom prompts.</p>') + navRow(2);
   },
 
   obs() {
-    const sugg = uniq(selectedRefs().flatMap(r => r.m));
-    const used = new Set(S.measures.map(m => trim(m.name)));
     const mse = MSE_FIELDS.map(f => `<div class="field"><label for="mse_${f.key}">${f.label}</label>
         <select id="mse_${f.key}" data-b="mse.${f.key}"><option value="">— not assessed —</option>${f.opts.map(o => `<option${o === S.mse[f.key] ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`).join('');
     return head('Objective observations', 'Document what you observed and measured, separate from the client\'s report.') +
       `<h3>Mental status</h3><div class="grid2">${mse}${field('Mood <span class="hint">(client\'s words)</span>', 'mse.mood', { ph: 'e.g., "overwhelmed"' })}</div>` +
       field('Other clinician observations', 'obsNotes', { type: 'textarea', ph: 'Observable behavior and presentation (e.g., tearful when discussing ___, fidgeting, minimal eye contact, engagement with tasks).' }) +
       `<h3>Standardized measures</h3>
-       ${sugg.length ? `<p class="hint">Suggested for the selected diagnosis:</p><div class="chips" style="margin-bottom:10px">${sugg.map(m => `<button type="button" class="chip" data-action="add-measure" data-name="${esc(m)}" ${used.has(m) ? 'disabled' : ''}>+ ${esc(m)}</button>`).join('')}</div>` : ''}
-       <div id="measureList">${S.measures.map((m, i) => `<div class="measure">
-          <div><label for="m_n${i}">Measure</label><input id="m_n${i}" data-b="measures.${i}.name" value="${esc(m.name)}"></div>
-          <div><label for="m_s${i}">Score today</label><input id="m_s${i}" data-b="measures.${i}.score" value="${esc(m.score)}"></div>
-          <div><label for="m_p${i}">Previous</label><input id="m_p${i}" data-b="measures.${i}.prev" value="${esc(m.prev)}"></div>
-          <button class="btn small danger" data-action="rm-measure" data-idx="${i}" aria-label="Remove measure">✕</button></div>`).join('')}</div>
-       <button class="btn small" data-action="add-measure" data-name="">+ Add measure</button>` + navRow(3);
+       ${measuresUI()}` + navRow(3);
   },
 
   risk() {
@@ -685,35 +702,383 @@ function renderDxResults() {
     : '<div class="empty">No matches. Use "Add a diagnosis not in the list" below.</div>';
 }
 
+function measuresUI() {
+  const sugg = uniq(selectedRefs().flatMap(r => r.m));
+  const used = new Set(S.measures.map(m => trim(m.name)));
+  return `${sugg.length ? `<p class="hint">Suggested for the selected diagnosis:</p><div class="chips" style="margin-bottom:10px">${sugg.map(m => `<button type="button" class="chip" data-action="add-measure" data-name="${esc(m)}" ${used.has(m) ? 'disabled' : ''}>+ ${esc(m)}</button>`).join('')}</div>` : ''}
+    <div id="measureList">${S.measures.map((m, i) => `<div class="measure">
+      <div><label for="m_n${i}">Measure</label><input id="m_n${i}" data-b="measures.${i}.name" value="${esc(m.name)}"></div>
+      <div><label for="m_s${i}">Score today</label><input id="m_s${i}" data-b="measures.${i}.score" value="${esc(m.score)}"></div>
+      <div><label for="m_p${i}">Previous</label><input id="m_p${i}" data-b="measures.${i}.prev" value="${esc(m.prev)}"></div>
+      <button class="btn small danger" data-action="rm-measure" data-idx="${i}" aria-label="Remove measure">✕</button></div>`).join('')}</div>
+    <button class="btn small" data-action="add-measure" data-name="">+ Add measure</button>`;
+}
+
+/* =====================================================================
+ * Guided interview mode: one question at a time, all answers write to S
+ * ===================================================================== */
+const MSE_WNL = {
+  appearance: 'Casually dressed, adequately groomed', behavior: 'Cooperative, engaged, good eye contact', speech: 'Normal rate, volume, and tone',
+  affect: 'Full range, congruent with mood', thoughtProcess: 'Linear and goal-directed', thoughtContent: 'No delusions or obsessions noted',
+  perception: 'No hallucinations reported or observed', cognition: 'Alert and oriented x4', insight: 'Good', judgment: 'Intact',
+};
+const SX_BUTTONS = [['present', 'Present'], ['improved', 'Improved'], ['worsened', 'Worsened'], ['absent', 'Not present']];
+const EVENT_TAGS = ['Work or school stress', 'Family conflict', 'Relationship change', 'Health or medication change', 'Loss or grief', 'Substance use', 'Financial or housing stress', 'Legal issue', 'Positive event or achievement', 'No significant changes reported'];
+const OBS_STARTERS = ['Client was tearful when discussing ', 'Client fidgeted throughout the session.', 'Client actively engaged in session tasks.', 'Eye contact decreased when discussing ', 'Client appeared visibly calmer by the end of session.', 'Client arrived late, reporting '];
+const RESPONSE_STARTERS = ['Client was engaged and receptive to ', 'Client practiced ', 'Client\'s distress changed from __/10 to __/10 after ', 'Client identified ', 'Client expressed ambivalence about ', 'Barrier to progress identified: '];
+const HOMEWORK = {
+  ba: 'Complete the scheduled activities and rate mood before and after each.',
+  cbt: 'Complete at least three thought records when noticing a mood shift.',
+  exp: 'Practice the agreed exposure daily and record SUDS before, at peak, and after.',
+  erp: 'Complete daily ERP practice without performing the ritual and log SUDS.',
+  pe: 'Listen to the imaginal exposure recording daily and complete the in vivo assignment.',
+  cpt: 'Complete the assigned CPT worksheet on the identified stuck point.',
+  dbt: 'Complete the diary card daily and practice the skill taught this session.',
+  mind: 'Practice the mindfulness exercise for 10 minutes daily.',
+  relax: 'Practice diaphragmatic breathing twice daily and before stressful situations.',
+  ground: 'Use the grounding skill when distress rises and note SUDS before and after.',
+  cbti: 'Keep the sleep diary and follow the agreed sleep window and rise time.',
+  selfmon: 'Track target symptoms daily using the log provided.',
+  safety: 'Keep the safety plan accessible and share it with a support person.',
+  act: 'Take the committed-action step identified in session.',
+  ps: 'Carry out the first step of the problem-solving plan.',
+  mi: 'Reflect on the pros and cons of change discussed today.',
+  sst: 'Practice the rehearsed social skill in at least one real situation.',
+  hrt: 'Use the competing response at each urge and log episodes.',
+  pmt: 'Caregivers to use the practiced strategy daily and track target behavior.',
+  orgskills: 'Use the planner system daily and bring it to next session.',
+};
+const FREQ_ADJ = { 'Weekly': 'weekly', 'Every other week': 'biweekly', 'Twice weekly': 'twice-weekly', 'Monthly': 'monthly' };
+
+const riskElevated = () => { const r = S.risk; return (r.si && r.si !== 'none') || (r.hi && r.hi !== 'none') || r.sh === 'recent' || r.sh === 'ongoing' || r.level === 'Moderate' || r.level === 'High'; };
+const recommendedInts = () => uniq(selectedRefs().flatMap(r => r.i)).filter(id => INTERVENTIONS[id]);
+function suggestedCpt() {
+  const d = duration();
+  if (d == null || d < 16) return null;
+  return d >= 53 ? '90837' : d >= 38 ? '90834' : '90832';
+}
+
+function questions() {
+  const Q = [];
+  const add = q => Q.push(q);
+  const dur = duration(), sug = suggestedCpt();
+
+  add({ id: 'client', sec: 'session', type: 'fields', grid: 'grid2', title: 'Who is this note for?', help: 'Use a client ID or initials, not a full name.',
+    fields: [['Client ID / initials', 'session.clientId', { ph: 'e.g., JD-0412' }], ['Session #', 'session.sessionNum', { type: 'number' }], ['Your name & credentials <span class="hint">(optional)</span>', 'session.practitioner', { ph: 'e.g., A. Rivera, LCSW' }]] });
+  add({ id: 'when', sec: 'session', type: 'fields', grid: 'grid3', title: 'When did the session take place?', help: 'Actual start and end times support time-based billing codes.',
+    fields: [['Date', 'session.date', { type: 'date' }], ['Start time', 'session.start', { type: 'time' }], ['End time', 'session.end', { type: 'time' }]] });
+  add({ id: 'cpt', sec: 'session', type: 'single', path: 'session.cpt', title: 'What service did you provide?',
+    help: dur != null ? `Session length: ${dur} minutes.` : 'Tip: enter start and end times to get a code suggestion.',
+    options: CPT_CODES.map(c => [c[0], `${c[0]} – ${c[1]}`, c[0] === sug ? `matches ${dur} min` : '']) });
+  add({ id: 'modality', sec: 'session', type: 'single', path: 'session.modality', title: 'How was the session delivered?', options: MODALITIES.map(m => [m, m]) });
+  add({ id: 'participants', sec: 'session', type: 'single', path: 'session.participants', title: 'Who participated?', options: PARTICIPANTS.map(m => [m, m]) });
+
+  add({ id: 'dx', sec: 'dx', type: 'dx', title: 'What is the client\'s diagnosis?', help: 'Choose the diagnosis you have already made, then pick the specifier. The rest of the questions adapt to it. The app does not diagnose.' });
+
+  add({ id: 'since', sec: 'subj', type: 'text', path: 'subj.since', title: 'How has the client been since the last session?', help: 'Summarize what the client reported in a sentence or two.',
+    ph: 'e.g., Client reported low mood most days this week and missed two days of work.', chips: SUBJECTIVE_STARTERS });
+  add({ id: 'quote', sec: 'subj', type: 'line', path: 'subj.quote', title: 'Is there a short quote in the client\'s own words worth including?', help: 'Optional. Quotation marks are added for you.', ph: 'e.g., I just can\'t get going' });
+  add({ id: 'events', sec: 'subj', type: 'text', path: 'subj.events', tall: false, title: 'Any notable events or stressors since the last session?', chips: EVENT_TAGS, sep: '; ' });
+  add({ id: 'focus', sec: 'subj', type: 'line', path: 'subj.focus', title: 'What did the client want to focus on today?', ph: 'e.g., managing stress at work' });
+  S.dx.forEach((d, i) => {
+    const ref = DXMAP[d.id];
+    if (ref && ref.sx.length) add({ id: 'sx_' + d.id, sec: 'subj', type: 'sx', idx: i, title: `How are the ${ref.name} symptoms compared with last session?`, help: 'Mark only the symptoms that came up. Tap again to clear.' });
+  });
+
+  add({ id: 'mse', sec: 'obs', type: 'mse', title: 'How did the client present?', help: 'Set anything notable, then fill the rest as within normal limits.' });
+  add({ id: 'mood', sec: 'obs', type: 'line', path: 'mse.mood', title: 'How did the client describe their mood?', help: 'Use their words, e.g., "tired", "a little better".' });
+  add({ id: 'obs', sec: 'obs', type: 'text', path: 'obsNotes', tall: false, title: 'Anything else you observed?', help: 'Optional. Describe observable behavior, not interpretation.', chips: OBS_STARTERS });
+  add({ id: 'measures', sec: 'obs', type: 'measures', title: 'Did you give a standardized measure?', help: 'Optional. Enter today\'s score and the previous one to show change.' });
+
+  add({ id: 'si', sec: 'risk', type: 'single', path: 'risk.si', title: 'Suicide risk: what did your screening show?', options: SI_OPTS });
+  if (S.risk.si && S.risk.si !== 'none') add({ id: 'siDetail', sec: 'risk', type: 'text', path: 'risk.siDetail', tall: false, title: 'Describe the suicidal ideation.', help: 'Frequency, duration, plan, intent, access to means, prior attempts, recent behavior.' });
+  add({ id: 'hi', sec: 'risk', type: 'single', path: 'risk.hi', title: 'Violence risk: any thoughts of harming others?', options: HI_OPTS });
+  add({ id: 'sh', sec: 'risk', type: 'single', path: 'risk.sh', title: 'Any self-harm urges or behavior?', options: SH_OPTS });
+  add({ id: 'abuse', sec: 'risk', type: 'single', path: 'risk.abuse', title: 'Any abuse, neglect, or intimate partner violence concerns?', options: ABUSE_OPTS });
+  add({ id: 'protective', sec: 'risk', type: 'multi', path: 'risk.protective', title: 'Which protective factors are present?', help: 'Select all that apply.', options: PROTECTIVE });
+  add({ id: 'level', sec: 'risk', type: 'single', path: 'risk.level', title: 'What is your overall acute risk level?', options: [['Low', 'Low'], ['Moderate', 'Moderate'], ['High', 'High']] });
+  add({ id: 'actions', sec: 'risk', type: 'multi', path: 'risk.actions', title: 'What risk-related actions did you take?', help: 'Select all that apply.', options: RISK_ACTIONS });
+  if (riskElevated()) add({ id: 'riskNotes', sec: 'risk', type: 'text', path: 'risk.notes', tall: false, title: 'What is your reasoning for the risk level and plan?', help: 'Risk and protective factors weighed, consultation, follow-up, level-of-care decision.' });
+
+  add({ id: 'ints', sec: 'int', type: 'ints', title: 'Which interventions did you use?', help: 'Select everything you actually did this session.' });
+  selectedInts().forEach(it => add({ id: 'int_' + it.id, sec: 'int', type: 'intdetail', intId: it.id, title: `${it.label}: what specifically did you do?`, help: 'A phrase or two: the technique, the content, and any ratings.' }));
+  add({ id: 'response', sec: 'int', type: 'text', path: 'response', title: 'How did the client respond?', help: 'Engagement, skill use, change in distress ratings, insight, or barriers.', chips: RESPONSE_STARTERS });
+
+  add({ id: 'goals', sec: 'prog', type: 'goals', title: 'Which treatment-plan goals did you work on?', help: 'Add the goals from the client\'s treatment plan. They carry over to the next session.' });
+  S.goals.forEach((g, i) => { if (len(g.text)) add({ id: 'goal_' + i, sec: 'prog', type: 'goalprog', idx: i, title: `How much progress on goal ${i + 1}?` }); });
+  add({ id: 'func', sec: 'prog', type: 'multi', path: 'func.domains', title: 'Where do symptoms still affect the client\'s daily functioning?', help: 'Select all that apply. This supports medical necessity.', options: IMPAIRMENT });
+  add({ id: 'rec', sec: 'prog', type: 'single', path: 'func.rec', title: 'What do you recommend for treatment going forward?', options: RECOMMENDATIONS.slice(1) });
+  add({ id: 'impression', sec: 'prog', type: 'draft', draft: 'impression', path: 'impression', title: 'What is your clinical impression?', help: 'Synthesize rather than repeat: how today\'s presentation and response relate to the diagnosis and goals.' });
+  add({ id: 'funcStatement', sec: 'prog', type: 'draft', draft: 'necessity', path: 'func.statement', title: 'Why is continued treatment medically necessary?', help: 'Tie current impairment to the diagnosis and the level of care.' });
+
+  add({ id: 'next', sec: 'plan', type: 'fields', grid: 'grid2', title: 'When is the next session?', fields: [['Next appointment', 'plan.next', { ph: 'e.g., Oct 18, 2:00 PM' }], ['Frequency', 'plan.freq', { type: 'select', options: FREQUENCIES }]] });
+  add({ id: 'focusNext', sec: 'plan', type: 'text', path: 'plan.focus', tall: false, title: 'What will the next session focus on?', chips: ['Review between-session assignment.', 'Continue current treatment focus.', 'Review and update safety plan.', 'Readminister outcome measure.'] });
+  add({ id: 'homework', sec: 'plan', type: 'text', path: 'plan.homework', tall: false, title: 'Did you give a between-session assignment?', help: 'Specific and measurable works best.',
+    chips: uniq([...selectedInts().map(i => HOMEWORK[i.id]).filter(Boolean), 'Practice the skill from today at least 3 times this week.', 'No assignment given this session.']) });
+  add({ id: 'coord', sec: 'plan', type: 'text', path: 'plan.coord', tall: false, title: 'Any coordination of care or referrals?', help: 'Optional.',
+    chips: ['Coordinated with prescriber (release on file).', 'Consulted with clinical supervisor.', 'Provided referral to ', 'No coordination of care needed this session.'] });
+  add({ id: 'change', sec: 'plan', type: 'text', path: 'plan.change', tall: false, title: 'Any changes to the treatment plan?', help: 'Optional.', chips: ['No changes to the treatment plan.', 'Treatment plan updated: ', 'Treatment plan review due '] });
+
+  add({ id: 'done', sec: 'plan', type: 'done', title: 'Your note is ready' });
+  return Q;
+}
+
+function textQ(q, multi) {
+  const v = getPath(S, q.path) || '';
+  const ctl = multi
+    ? `<textarea class="${q.tall === false ? '' : 'tall'}" data-b="${q.path}" aria-label="${esc(q.title)}" placeholder="${esc(q.ph || '')}">${esc(v)}</textarea>`
+    : `<input type="text" data-b="${q.path}" aria-label="${esc(q.title)}" value="${esc(v)}" placeholder="${esc(q.ph || '')}" autocomplete="off">`;
+  const ch = q.chips && q.chips.length
+    ? `<div class="chips qchips">${q.chips.map(t => `<button type="button" class="chip" data-action="starter" data-target="${q.path}" data-text="${esc(t)}"${q.sep ? ` data-sep="${esc(q.sep)}"` : ''}>${esc(t.trim())}</button>`).join('')}</div>`
+    : '';
+  return ctl + ch;
+}
+
+const QTYPES = {
+  fields: q => `<div class="${q.grid || ''}">${q.fields.map(([l, p, o]) => field(l, p, o || {})).join('')}</div>`,
+  single: q => {
+    const v = getPath(S, q.path);
+    return `<div class="opts" role="radiogroup" aria-label="${esc(q.title)}">${q.options.map((o, k) => `<button type="button" class="opt" role="radio" aria-checked="${o[0] === v}" data-action="q-pick" data-path="${q.path}" data-val="${esc(o[0])}" data-n="${k + 1}"${q.stay ? ' data-stay' : ''}><span class="key" aria-hidden="true">${k < 9 ? k + 1 : ''}</span><span>${esc(o[1])}${o[2] ? ` <span class="tag">${esc(o[2])}</span>` : ''}</span></button>`).join('')}</div>`;
+  },
+  multi: q => chips(q.path, q.options, getPath(S, q.path)),
+  text: q => textQ(q, true),
+  line: q => textQ(q, false),
+  dx: () => `<input type="search" id="dxSearch" aria-label="Search diagnoses" placeholder="Search by name, code, or category (e.g., depress, F43, OCD)" autocomplete="off">
+    <div class="dx-results" id="dxResults" role="listbox" aria-label="Diagnosis results"></div>
+    <details class="guide"><summary>Add a diagnosis not in the list</summary><div class="gbody"><div class="grid2">
+      <div class="field"><label for="cdxCode">ICD-10-CM code</label><input id="cdxCode" type="text" placeholder="e.g., F43.9"></div>
+      <div class="field"><label for="cdxName">Diagnosis name</label><input id="cdxName" type="text" placeholder="Name"></div></div>
+      <button class="btn small" data-action="add-custom">Add diagnosis</button></div></details>
+    <div id="dxCards">${S.dx.map((d, i) => dxCard(d, i)).join('')}</div>`,
+  sx: q => {
+    const d = S.dx[q.idx];
+    return `<div class="sxq">${DXMAP[d.id].sx.map((txt, k) => {
+      const v = (d.sx || {})[k] || '';
+      return `<div class="sxq-row"><span class="sxq-label" id="sxq_${k}">${esc(txt)}</span><div class="seg" role="group" aria-labelledby="sxq_${k}">${SX_BUTTONS.map(([val, lab]) => `<button type="button" class="segbtn s-${val}" data-action="q-sx" data-idx="${q.idx}" data-k="${k}" data-val="${val}" aria-pressed="${v === val}">${lab}</button>`).join('')}</div></div>`;
+    }).join('')}</div>`;
+  },
+  mse: () => `<div class="grid2">${MSE_FIELDS.map(f => `<div class="field"><label for="mse_${f.key}">${f.label}</label><select id="mse_${f.key}" data-b="mse.${f.key}"><option value="">— not assessed —</option>${f.opts.map(o => `<option${o === S.mse[f.key] ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`).join('')}</div>
+    <button class="btn" data-action="mse-wnl">Fill the rest as within normal limits</button>`,
+  measures: () => measuresUI(),
+  goals: () => {
+    const sug = uniq(selectedRefs().flatMap(r => r.g));
+    const have = new Set(S.goals.map(g => trim(g.text)));
+    return S.goals.map((g, i) => `<div class="goal"><div class="gh"><strong>Goal ${i + 1}</strong><button class="btn small danger" data-action="rm-goal" data-idx="${i}" aria-label="Remove goal ${i + 1}">Remove</button></div>
+        <textarea data-b="goals.${i}.text" aria-label="Goal ${i + 1}" placeholder="Measurable goal from the treatment plan">${esc(g.text)}</textarea></div>`).join('') +
+      `<button class="btn small" data-action="add-goal" data-text="">+ Add goal</button>` +
+      (sug.length ? `<h3 style="margin-top:18px">Suggested goals for this diagnosis</h3><p class="hint">Edit the [brackets] after adding.</p><div class="suggest">${sug.map(t => `<button class="btn small" data-action="add-goal" data-text="${esc(t)}" ${have.has(t) ? 'disabled' : ''}>+ ${esc(t)}</button>`).join('')}</div>` : '');
+  },
+  ints: () => {
+    const rec = recommendedInts();
+    const gen = GENERAL_INTERVENTIONS.filter(id => !rec.includes(id));
+    const chip = id => `<button type="button" class="chip" data-action="q-int" data-id="${id}" aria-pressed="${!!(S.int[id] && S.int[id].on)}">${esc(INTERVENTIONS[id][0])}</button>`;
+    return (rec.length ? `<h3>Evidence-based for the selected diagnosis</h3><div class="chips">${rec.map(chip).join('')}</div>` : '') +
+      `<h3 style="margin-top:16px">General</h3><div class="chips">${gen.map(chip).join('')}</div>` +
+      `<div style="margin-top:16px">${field('Anything else? <span class="hint">(optional)</span>', 'intOther', { ph: 'Other interventions, with specifics' })}</div>`;
+  },
+  intdetail: q => textQ({ ...q, path: `int.${q.intId}.detail`, ph: INTERVENTIONS[q.intId][1], tall: false }, true),
+  goalprog: q => {
+    const ints = selectedInts();
+    return `<blockquote class="goalq">${esc(S.goals[q.idx].text)}</blockquote>` +
+      QTYPES.single({ ...q, path: `goals.${q.idx}.progress`, options: PROGRESS_OPTS.map(o => [o, o]), stay: true }) +
+      `<div style="margin-top:14px">${field('Evidence <span class="hint">score change, behavior, frequency</span>', `goals.${q.idx}.comment`, { ph: 'e.g., PHQ-9 18 → 15; walked 3 of 7 days' })}</div>` +
+      (ints.length ? `<p class="hint">Which interventions addressed this goal?</p><div class="chips">${ints.map(it => `<button type="button" class="chip" data-action="q-link" data-id="${it.id}" data-idx="${q.idx}" aria-pressed="${String(it.goal) === String(q.idx)}">${esc(it.label)}</button>`).join('')}</div>` : '');
+  },
+  draft: q => textQ(q, true) + `<div class="qchips"><button class="btn" data-action="q-draft" data-kind="${q.draft}" data-target="${q.path}">✎ Draft from my answers</button></div>
+    <p class="hint">The draft only restates what you entered. Review and edit it before using.</p>`,
+  done: () => {
+    const checks = runChecks();
+    const score = scoreOf(checks);
+    const issues = checks.filter(c => c.level !== 'ok').sort((a, b) => (a.level === 'bad' ? -1 : 0) - (b.level === 'bad' ? -1 : 0));
+    return `<p class="done-score"><strong>${score}%</strong> documentation completeness</p><div class="meter" role="img" aria-label="${score} percent"><i style="width:${score}%"></i></div>
+      <div class="pane-actions"><button class="btn primary" data-action="copy">Copy note</button><button class="btn" data-action="download">Download .txt</button><button class="btn" data-action="print">Print</button></div>
+      ${issues.length ? `<h3 style="margin-top:16px">Before you sign, consider:</h3>` + issues.map(c => `<div class="chk ${c.level}"><span class="ic" aria-hidden="true">${c.level === 'bad' ? '✕' : '!'}</span><div><div class="t">${esc(c.title)}</div><div class="tip">${esc(c.tip)}</div><button class="linklike jump" data-q="${checkQ(c.id)}">Answer this →</button></div></div>`).join('') : '<p>No documentation gaps found.</p>'}
+      <div class="inline-note"><h3 style="margin-top:16px">Your note</h3><div class="note">${esc(buildNote())}</div></div>
+      <p class="hint" style="margin-top:14px">Your note is in the Note panel. Change its layout with "Note format" at the top, then paste it into your EHR and review it before signing.</p>`;
+  },
+};
+
+/* ---------- drafts built only from the clinician's own answers ---------- */
+const shortSx = t => lcFirst(t.replace(/\s*\(.*?\)/g, '').replace(/\s*\/.*$/, '').trim());
+const shortInt = t => t.replace(/\s*\(.*?\)/g, '').split(' ').map(w => (/^[A-Z0-9-]{2,}$/.test(w) ? w : w.toLowerCase())).join(' ');
+function sxGroups() {
+  const g = { present: [], improved: [], worsened: [], absent: [] };
+  for (const d of S.dx) {
+    const ref = DXMAP[d.id];
+    if (ref) ref.sx.forEach((t, k) => { const st = d.sx && d.sx[k]; if (g[st]) g[st].push(shortSx(t)); });
+  }
+  return g;
+}
+function measureChanges() {
+  return S.measures.filter(m => trim(m.name) && trim(m.score)).map(m => {
+    const n = trim(m.name), a = parseFloat(m.prev), b = parseFloat(m.score);
+    if (isNaN(a) || isNaN(b)) return `${n} score was ${trim(m.score)}`;
+    return b < a ? `${n} decreased from ${a} to ${b}` : b > a ? `${n} increased from ${a} to ${b}` : `${n} was unchanged at ${b}`;
+  });
+}
+const primaryDx = () => S.dx.find(d => d.primary) || S.dx[0];
+
+const DRAFTS = {
+  impression() {
+    const out = [];
+    const prim = primaryDx();
+    if (prim) out.push(`Client's presentation remains consistent with ${dxName(prim)}${prim.code ? ` (${prim.code})` : ''}.`);
+    const g = sxGroups();
+    const bits = [];
+    if (g.improved.length) bits.push(`improvement in ${joinList(g.improved.slice(0, 3))}`);
+    if (g.worsened.length) bits.push(`worsening of ${joinList(g.worsened.slice(0, 3))}`);
+    if (g.present.length) bits.push(`ongoing ${joinList(g.present.slice(0, 3))}`);
+    if (bits.length) out.push(`Compared with last session, client reports ${joinList(bits)}.`);
+    const mc = measureChanges();
+    if (mc.length) out.push(`${capFirst(joinList(mc))}.`);
+    const ints = selectedInts();
+    if (ints.length) out.push(`Session interventions included ${joinList(ints.slice(0, 3).map(i => shortInt(i.label)))}.`);
+    const prog = S.goals.filter(x => len(x.text) && x.progress && x.progress !== PROGRESS_OPTS[0]).map(x => x.progress);
+    if (prog.length) {
+      if (prog.some(p => p === 'Goal met' || p === 'Significant progress')) out.push('Client is making meaningful progress toward treatment goals.');
+      else if (prog.some(p => p === 'Moderate progress' || p === 'Minimal progress')) out.push('Client is making gradual progress toward treatment goals.');
+      else if (prog.includes('Regression')) out.push('Some regression is noted; the treatment approach will be reviewed.');
+      else out.push('Progress toward treatment goals has been limited; the treatment approach will be reviewed.');
+    }
+    if (S.risk.level) {
+      const si = S.risk.si && S.risk.si !== 'none' ? `, with ${lcFirst(lookup(SI_OPTS, S.risk.si)).replace(/,? no plan or intent$/, ' without plan or intent')}` : '';
+      out.push(`Acute risk is assessed as ${S.risk.level.toLowerCase()}${si}.`);
+    }
+    return out.join(' ');
+  },
+  necessity() {
+    const prim = primaryDx();
+    const doms = S.func.domains.map(x => x.toLowerCase().replace(' / ', '/'));
+    if (!prim && !doms.length) return '';
+    const g = sxGroups();
+    const active = [...g.worsened, ...g.present].slice(0, 3);
+    const out = [`${prim ? `Symptoms of ${dxName(prim)}` : 'Current symptoms'}${active.length ? ` (${joinList(active)})` : ''} ${doms.length ? `continue to impair the client's functioning in ${joinList(doms)}` : 'continue to cause clinically significant distress'}.`];
+    if (S.func.rec === 'higher') {
+      out.push('Current symptoms and risk exceed what can be safely addressed at this level of care, and referral to a higher level of care is recommended.');
+    } else {
+      const aims = ['reduce symptom severity', 'restore functioning'];
+      if (riskElevated()) aims.push('monitor risk');
+      const freq = FREQ_ADJ[S.plan.freq] ? FREQ_ADJ[S.plan.freq] + ' ' : '';
+      const nGoals = S.goals.filter(x => len(x.text)).length;
+      out.push(`Continued ${freq}outpatient psychotherapy is medically necessary to ${joinList(aims)}${nGoals ? ', consistent with the current treatment plan goals' : ''}.`);
+    }
+    if (S.func.rec === 'discharge') out.push('Client is approaching discharge criteria; remaining sessions will focus on consolidating gains and relapse prevention.');
+    return out.join(' ');
+  },
+};
+
+/* ---------- interview navigation ---------- */
+function curQ() {
+  const Q = questions();
+  let i = Q.findIndex(q => q.id === qid);
+  if (i < 0) i = Math.max(0, Math.min(qIndex, Q.length - 1));
+  qIndex = i;
+  qid = Q[i].id;
+  step = Q[i].sec;
+  return { Q, i, q: Q[i] };
+}
+
+function renderQuestion() {
+  const { Q, i, q } = curQ();
+  const n = Q.length;
+  const sec = STEPS.find(s => s.id === q.sec).label;
+  return `<div class="q" data-qid="${q.id}">
+    <div class="qprogress"><span>${q.type === 'done' ? 'Finished' : `Question ${i + 1} of ${n - 1}`} · ${sec}</span><div class="meter"><i style="width:${Math.round(100 * i / (n - 1))}%"></i></div></div>
+    <h2 class="qtitle" tabindex="-1">${esc(q.title)}</h2>
+    ${q.help ? `<p class="lead">${q.help}</p>` : ''}
+    <div class="qbody">${QTYPES[q.type](q)}</div>
+    <div class="qnav"><button class="btn" data-q-nav="back"${i === 0 ? ' disabled' : ''}>← Back</button><span class="spacer"></span>
+      ${q.type === 'done' ? '<button class="btn" data-q="client">Review from the start</button>' : `<button class="btn primary" data-q-nav="next">${i === n - 2 ? 'Finish' : 'Next'} →</button>`}</div>
+  </div>`;
+}
+
+function focusQuestion() {
+  const top = panel.getBoundingClientRect().top;
+  if (top < 0 || top > window.innerHeight * 0.6) panel.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  const input = $('.qbody input, .qbody textarea', panel);
+  const touch = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+  (input && !touch ? input : $('.qtitle', panel)).focus({ preventScroll: true });
+}
+
+function goQ(id, focus = true) {
+  qid = id;
+  renderPanel();
+  update();
+  if (focus) focusQuestion();
+}
+
+let advancing = false;
+function qMove(delta) {
+  const { Q, i } = curQ();
+  goQ(Q[Math.max(0, Math.min(Q.length - 1, i + delta))].id);
+}
+
+// Which question fixes a given quality-check finding.
+function checkQ(id) {
+  const Q = questions();
+  const first = pred => (Q.find(pred) || {}).id;
+  switch (id) {
+    case 'id': return 'client';
+    case 'time': return 'when';
+    case 'sx': return first(q => q.type === 'sx') || 'dx';
+    case 'report': case 'lang': case 'phi': return 'since';
+    case 'mse': return 'mse';
+    case 'meas': return 'measures';
+    case 'risk': return S.risk.si ? 'hi' : 'si';
+    case 'riskAct': return S.risk.actions.some(a => a !== 'No additional action required') && Q.some(q => q.id === 'riskNotes') ? 'riskNotes' : 'actions';
+    case 'abuse': return 'actions';
+    case 'ints': return first(q => q.type === 'intdetail' && len((S.int[q.intId] || {}).detail) < 15) || 'ints';
+    case 'link': case 'prog': return first(q => q.type === 'goalprog') || 'goals';
+    case 'resp': return 'response';
+    case 'imp': return 'impression';
+    case 'func': return 'funcStatement';
+    case 'plan': return 'next';
+    default: return Q.some(q => q.id === id) ? id : 'dx';
+  }
+}
+
+function setMode(m) {
+  mode = m;
+  $$('.modes button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === m)));
+  if (m === 'interview') {
+    const { q } = curQ();
+    if (q.sec !== step) { const f = questions().find(x => x.sec === step); if (f) qid = f.id; }
+  }
+  renderPanel();
+  update();
+}
+
 /* =====================================================================
  * Rendering – chrome
  * ===================================================================== */
 function renderSteps(checks) {
   const byStep = {};
   (checks || []).forEach(c => { (byStep[c.step] = byStep[c.step] || []).push(c); });
+  const cur = mode === 'interview' ? curQ().q.sec : step;
   setHTML($('#steps'), STEPS.map((s, i) => {
     const cs = byStep[s.id] || [];
     const done = cs.length && cs.every(c => c.level === 'ok');
-    return `<button class="step${done ? ' done' : ''}" data-go="${s.id}"${s.id === step ? ' aria-current="step"' : ''}><span class="n">${done ? '✓' : i + 1}</span>${s.label}</button>`;
+    return `<button class="step${done ? ' done' : ''}" data-go="${s.id}"${s.id === cur ? ' aria-current="step"' : ''}><span class="n">${done ? '✓' : i + 1}</span>${s.label}</button>`;
   }).join(''));
 }
 
 function renderPanel() {
-  panel.innerHTML = VIEWS[step]();
-  if (step === 'dx') renderDxResults();
+  panel.innerHTML = mode === 'interview' ? renderQuestion() : VIEWS[step]();
+  if ($('#dxResults', panel)) renderDxResults();
 }
 
 function renderPreview() {
-  const hasContent = S.dx.length || trim(S.subj.report) || trim(S.session.clientId);
+  const hasContent = S.dx.length || trim(S.subj.since) || trim(S.subj.report) || trim(S.session.clientId);
   const text = buildNote();
   const el = $('#notePreview');
   el.textContent = text;
-  if (!hasContent) el.innerHTML = '<span class="empty">Your note builds here as you fill in the steps. Start with the session details and diagnosis.</span>';
+  if (!hasContent) el.innerHTML = '<span class="empty">Your note builds here as you answer. Start with the session details and diagnosis.</span>';
 }
 
+const scoreOf = checks => Math.round(100 * checks.reduce((n, c) => n + { ok: 1, warn: 0.5, bad: 0 }[c.level], 0) / (checks.length || 1));
+
 function renderChecks(checks) {
-  const weights = { ok: 1, warn: 0.5, bad: 0 };
-  const score = Math.round(100 * checks.reduce((n, c) => n + weights[c.level], 0) / (checks.length || 1));
+  const score = scoreOf(checks);
   $('#scoreBadge').textContent = score + '%';
   const groups = [['bad', 'Needs attention'], ['warn', 'Could be stronger'], ['ok', 'Looks good']];
   const icon = { ok: '✓', warn: '!', bad: '✕' };
@@ -721,7 +1086,7 @@ function renderChecks(checks) {
     groups.map(([lvl, title]) => {
       const items = checks.filter(c => c.level === lvl);
       if (!items.length) return '';
-      return `<h4 style="margin:14px 0 4px">${title} (${items.length})</h4>` + items.map(c => `<div class="chk ${lvl}"><span class="ic" aria-hidden="true">${icon[lvl]}</span><div><div class="t">${esc(c.title)}</div><div class="tip">${esc(c.tip)}</div>${lvl !== 'ok' ? `<button class="linklike jump" data-go="${c.step}">Go to ${STEPS.find(s => s.id === c.step).label} →</button>` : ''}</div></div>`).join('');
+      return `<h4 style="margin:14px 0 4px">${title} (${items.length})</h4>` + items.map(c => `<div class="chk ${lvl}"><span class="ic" aria-hidden="true">${icon[lvl]}</span><div><div class="t">${esc(c.title)}</div><div class="tip">${esc(c.tip)}</div>${lvl !== 'ok' ? (mode === 'interview' ? `<button class="linklike jump" data-q="${checkQ(c.id)}">Answer this →</button>` : `<button class="linklike jump" data-go="${c.step}">Go to ${STEPS.find(s => s.id === c.step).label} →</button>`) : ''}</div></div>`).join('');
     }).join('') +
     '<p class="hint" style="margin-top:14px">This checks structure and common audit/best-practice items, not clinical quality. You remain responsible for the accuracy and appropriateness of the record.</p>');
   return score;
@@ -761,6 +1126,10 @@ function update(opts = {}) {
 
 function setStep(id, focus = true) {
   step = id;
+  if (mode === 'interview') {
+    const q = questions().find(x => x.sec === id);
+    if (q) { goQ(q.id, focus); return; }
+  }
   renderPanel();
   update();
   if (focus) { panel.scrollIntoView({ block: 'start', behavior: 'smooth' }); panel.focus({ preventScroll: true }); }
@@ -844,12 +1213,61 @@ function handleAction(el) {
     case 'starter': {
       const ta = $(`[data-b="${el.dataset.target}"]`);
       const cur = ta.value;
-      ta.value = cur ? cur + (/\s$/.test(cur) ? '' : ' ') + el.dataset.text : el.dataset.text;
+      const sep = el.dataset.sep;
+      ta.value = !trim(cur) ? el.dataset.text : sep ? cur.replace(/[\s;,]+$/, '') + sep + el.dataset.text : cur + (/\s$/.test(cur) ? '' : ' ') + el.dataset.text;
       setPath(S, el.dataset.target, ta.value);
       ta.focus();
       ta.setSelectionRange(ta.value.length, ta.value.length);
       break;
     }
+    case 'q-pick': {
+      setPath(S, el.dataset.path, el.dataset.val);
+      $$('.opt', el.parentNode).forEach(b => b.setAttribute('aria-checked', String(b === el)));
+      update();
+      if (!el.hasAttribute('data-stay') && !advancing) {
+        advancing = true;
+        setTimeout(() => { advancing = false; qMove(1); }, 180);
+      }
+      return;
+    }
+    case 'q-sx': {
+      const d = S.dx[idx];
+      d.sx = d.sx || {};
+      const v = d.sx[el.dataset.k] === el.dataset.val ? '' : el.dataset.val;
+      d.sx[el.dataset.k] = v;
+      $$('.segbtn', el.parentNode).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.val === v)));
+      break;
+    }
+    case 'q-int': {
+      const it = S.int[el.dataset.id] = S.int[el.dataset.id] || {};
+      it.on = !it.on;
+      el.setAttribute('aria-pressed', String(it.on));
+      break;
+    }
+    case 'q-link': {
+      const it = S.int[el.dataset.id];
+      const g = String(idx);
+      it.goal = String(it.goal) === g ? '' : g;
+      el.setAttribute('aria-pressed', String(it.goal === g));
+      break;
+    }
+    case 'mse-wnl':
+      for (const [k, v] of Object.entries(MSE_WNL)) if (!S.mse[k]) S.mse[k] = v;
+      renderPanel();
+      break;
+    case 'q-draft': {
+      const text = DRAFTS[el.dataset.kind]();
+      if (!text) { toast('Answer a few more questions first'); return; }
+      const ta = $(`[data-b="${el.dataset.target}"]`);
+      if (trim(ta.value) && trim(ta.value) !== text && !confirm('Replace your current text with a new draft?')) return;
+      ta.value = text;
+      setPath(S, el.dataset.target, text);
+      ta.focus();
+      break;
+    }
+    case 'copy': copyNote(); return;
+    case 'download': downloadNote(); return;
+    case 'print': window.print(); return;
     default: return;
   }
   update();
@@ -880,6 +1298,9 @@ document.addEventListener('click', e => {
     update();
     return;
   }
+  if (t.dataset.qNav) { qMove(t.dataset.qNav === 'back' ? -1 : 1); return; }
+  if (t.dataset.q) { if (mode !== 'interview') setMode('interview'); goQ(t.dataset.q); return; }
+  if (t.dataset.mode) { setMode(t.dataset.mode); return; }
   if (t.dataset.go) { setStep(t.dataset.go); return; }
   if (t.hasAttribute('data-go-check')) { selectPane('check'); $('.side').scrollIntoView({ behavior: 'smooth' }); return; }
   if (t.dataset.action && t.dataset.action !== 'set-primary') handleAction(t);
@@ -892,9 +1313,26 @@ function selectPane(name) {
 $$('.tabs button').forEach(b => b.addEventListener('click', () => selectPane(b.dataset.pane)));
 
 $('#format').value = S.format;
-$('#format').addEventListener('change', e => { S.format = e.target.value; update(); });
+$('#format').addEventListener('change', e => {
+  S.format = e.target.value;
+  if (mode === 'interview' && curQ().q.type === 'done') renderPanel();
+  update();
+});
 
-$('#btnCopy').addEventListener('click', async () => {
+// Interview shortcuts: number keys pick an answer; Enter in a one-line field moves on.
+document.addEventListener('keydown', e => {
+  if (mode !== 'interview' || e.altKey || e.ctrlKey || e.metaKey || $('dialog[open]')) return;
+  const t = e.target;
+  if (/^[1-9]$/.test(e.key) && !/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) {
+    const b = $(`.opt[data-n="${e.key}"]`, panel);
+    if (b) { e.preventDefault(); b.click(); }
+  } else if (e.key === 'Enter' && t.tagName === 'INPUT' && t.type !== 'search' && panel.contains(t)) {
+    e.preventDefault();
+    qMove(1);
+  }
+});
+
+async function copyNote() {
   const text = buildNote();
   try { await navigator.clipboard.writeText(text); toast('Note copied to clipboard'); }
   catch (_) {
@@ -903,8 +1341,8 @@ $('#btnCopy').addEventListener('click', async () => {
     try { document.execCommand('copy'); toast('Note copied to clipboard'); } catch (__) { toast('Copy failed – select the text manually'); }
     ta.remove();
   }
-});
-$('#btnDownload').addEventListener('click', () => {
+}
+function downloadNote() {
   const safe = s => (s || '').replace(/[^\w-]+/g, '_').slice(0, 30) || 'client';
   const blob = new Blob([buildNote()], { type: 'text/plain' });
   const a = document.createElement('a');
@@ -912,7 +1350,9 @@ $('#btnDownload').addEventListener('click', () => {
   a.download = `note_${safe(S.session.clientId)}_${S.session.date || 'undated'}.txt`;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-});
+}
+$('#btnCopy').addEventListener('click', copyNote);
+$('#btnDownload').addEventListener('click', downloadNote);
 $('#btnPrint').addEventListener('click', () => window.print());
 
 $('#btnClear').addEventListener('click', () => {
@@ -920,6 +1360,7 @@ $('#btnClear').addEventListener('click', () => {
   try { localStorage.removeItem(KEY); } catch (_) { /* ignore */ }
   const fmt = S.format;
   S = blank(); S.format = fmt;
+  qid = null; qIndex = 0;
   setStep('session', false);
   toast('Cleared');
 });
@@ -945,6 +1386,5 @@ $('#btnAbout').addEventListener('click', () => (dlg.showModal ? dlg.showModal() 
 $('#tipsContent').innerHTML = TIPS_HTML;
 
 /* ---------- init ---------- */
-renderPanel();
-update();
+setMode(mode);
 })();

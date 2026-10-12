@@ -71,14 +71,14 @@ function load() {
       if (s[k] === undefined) continue;
       b[k] = (b[k] && typeof b[k] === 'object' && !Array.isArray(b[k])) ? Object.assign(b[k], s[k]) : s[k];
     }
-    return { S: b, step: STEPS.some(x => x.id === saved.step) ? saved.step : 'session', mode: saved.mode === 'form' ? 'form' : 'interview', qid: saved.qid || null };
+    return { S: b, step: STEPS.some(x => x.id === saved.step) ? saved.step : 'session', qid: saved.qid || null };
   } catch (_) { return null; }
 }
 
 const loaded = load();
 let S = loaded ? loaded.S : blank();
 let step = loaded ? loaded.step : 'session';
-let mode = loaded ? loaded.mode : 'interview';   // 'interview' (guided questions) or 'form'
+let mode = 'interview';   // 'interview' (guided questions, always the starting view) or 'form'
 let qid = loaded ? loaded.qid : null;            // current interview question id
 let qIndex = 0;
 
@@ -761,17 +761,8 @@ function suggestedCpt() {
 function questions() {
   const Q = [];
   const add = q => Q.push(q);
-  const dur = duration(), sug = suggestedCpt();
 
-  add({ id: 'client', sec: 'session', type: 'fields', grid: 'grid2', title: 'Who is this note for?', help: 'Use a client ID or initials, not a full name.',
-    fields: [['Client ID / initials', 'session.clientId', { ph: 'e.g., JD-0412' }], ['Session #', 'session.sessionNum', { type: 'number' }], ['Your name & credentials <span class="hint">(optional)</span>', 'session.practitioner', { ph: 'e.g., A. Rivera, LCSW' }]] });
-  add({ id: 'when', sec: 'session', type: 'fields', grid: 'grid3', title: 'When did the session take place?', help: 'Actual start and end times support time-based billing codes.',
-    fields: [['Date', 'session.date', { type: 'date' }], ['Start time', 'session.start', { type: 'time' }], ['End time', 'session.end', { type: 'time' }]] });
-  add({ id: 'cpt', sec: 'session', type: 'single', path: 'session.cpt', title: 'What service did you provide?',
-    help: dur != null ? `Session length: ${dur} minutes.` : 'Tip: enter start and end times to get a code suggestion.',
-    options: CPT_CODES.map(c => [c[0], `${c[0]} – ${c[1]}`, c[0] === sug ? `matches ${dur} min` : '']) });
-  add({ id: 'modality', sec: 'session', type: 'single', path: 'session.modality', title: 'How was the session delivered?', options: MODALITIES.map(m => [m, m]) });
-  add({ id: 'participants', sec: 'session', type: 'single', path: 'session.participants', title: 'Who participated?', options: PARTICIPANTS.map(m => [m, m]) });
+  add({ id: 'session', sec: 'session', type: 'session', title: 'Session details', help: 'Fill these in once, then answer a few questions and your note is written for you.' });
 
   add({ id: 'dx', sec: 'dx', type: 'dx', title: 'What is the client\'s diagnosis?', help: 'Choose the diagnosis you have already made, then pick the specifier. The rest of the questions adapt to it. The app does not diagnose.' });
 
@@ -823,6 +814,12 @@ function questions() {
   return Q;
 }
 
+function cptHint() {
+  const dur = duration(), sug = suggestedCpt();
+  if (dur == null) return 'Enter start and end times and a time-based psychotherapy code is chosen for you.';
+  return `Session length ${dur} min${sug ? `, which matches ${sug}` : ''}.`;
+}
+
 function textQ(q, multi) {
   const v = getPath(S, q.path) || '';
   const ctl = multi
@@ -835,6 +832,12 @@ function textQ(q, multi) {
 }
 
 const QTYPES = {
+  session: () => `<div class="grid2">${field('Client ID / initials <span class="hint">(no full names)</span>', 'session.clientId', { ph: 'e.g., JD-0412' })}${field('Session #', 'session.sessionNum', { type: 'number' })}</div>
+    <div class="grid3">${field('Date', 'session.date', { type: 'date' })}${field('Start time', 'session.start', { type: 'time' })}${field('End time', 'session.end', { type: 'time' })}</div>
+    ${field('Service (CPT)', 'session.cpt', { type: 'select', options: CPT_CODES.map(c => [c[0], `${c[0]} – ${c[1]}`]) })}
+    <p class="hint" id="cptHint" style="margin:-8px 0 14px">${esc(cptHint())}</p>
+    <div class="grid2">${field('Format', 'session.modality', { type: 'select', options: MODALITIES })}${field('Participants', 'session.participants', { type: 'select', options: PARTICIPANTS })}</div>
+    ${field('Your name & credentials <span class="hint">(optional)</span>', 'session.practitioner', { ph: 'e.g., A. Rivera, LCSW' })}`,
   fields: q => `<div class="${q.grid || ''}">${q.fields.map(([l, p, o]) => field(l, p, o || {})).join('')}</div>`,
   single: q => {
     const v = getPath(S, q.path);
@@ -983,12 +986,12 @@ function renderQuestion() {
   const n = Q.length;
   const sec = STEPS.find(s => s.id === q.sec).label;
   return `<div class="q" data-qid="${q.id}">
-    <div class="qprogress"><span>${q.type === 'done' ? 'Finished' : `Question ${i + 1} of ${n - 1}`} · ${sec}</span><div class="meter"><i style="width:${Math.round(100 * i / (n - 1))}%"></i></div></div>
+    <div class="qprogress"><span>${q.type === 'done' ? 'Finished' : q.type === 'session' ? 'Getting started' : `Question ${i} of ${n - 2}`} · ${sec}</span><div class="meter"><i style="width:${Math.round(100 * i / (n - 1))}%"></i></div></div>
     <h2 class="qtitle" tabindex="-1">${esc(q.title)}</h2>
     ${q.help ? `<p class="lead">${q.help}</p>` : ''}
     <div class="qbody">${QTYPES[q.type](q)}</div>
-    <div class="qnav"><button class="btn" data-q-nav="back"${i === 0 ? ' disabled' : ''}>← Back</button><span class="spacer"></span>
-      ${q.type === 'done' ? '<button class="btn" data-q="client">Review from the start</button>' : `<button class="btn primary" data-q-nav="next">${i === n - 2 ? 'Finish' : 'Next'} →</button>`}</div>
+    <div class="qnav">${i === 0 ? '' : '<button class="btn" data-q-nav="back">← Back</button>'}<span class="spacer"></span>
+      ${q.type === 'done' ? '<button class="btn" data-q="session">Review from the start</button>' : `<button class="btn primary" data-q-nav="next">${q.type === 'session' ? 'Start questions' : i === n - 2 ? 'Finish' : 'Next'} →</button>`}</div>
   </div>`;
 }
 
@@ -1018,8 +1021,7 @@ function checkQ(id) {
   const Q = questions();
   const first = pred => (Q.find(pred) || {}).id;
   switch (id) {
-    case 'id': return 'client';
-    case 'time': return 'when';
+    case 'id': case 'time': return 'session';
     case 'sx': return first(q => q.type === 'sx') || 'dx';
     case 'report': case 'lang': case 'phi': return 'since';
     case 'mse': return 'mse';
@@ -1147,6 +1149,16 @@ function onField(e) {
   const val = t.type === 'checkbox' ? t.checked : t.value;
   setPath(S, path, val);
 
+  if (path === 'session.start' || path === 'session.end') {
+    const sug = suggestedCpt();
+    if (sug && sug !== S.session.cpt && CPT_RULES[S.session.cpt] && S.session.cpt !== '90839') {
+      S.session.cpt = sug;
+      const sel = $('[data-b="session.cpt"]', panel);
+      if (sel) sel.value = sug;
+    }
+    const h = $('#cptHint', panel);
+    if (h) h.textContent = cptHint();
+  }
   if (t.matches('[data-sx]')) t.closest('.sx-row').classList.toggle('on', !!val);
   if (t.type === 'checkbox' && /^int\./.test(path)) {
     const item = t.closest('.int-item');
@@ -1376,7 +1388,7 @@ $('#btnNext').addEventListener('click', () => {
   n.goals = old.goals.map(g => ({ text: g.text, progress: '', comment: '' }));
   n.measures = old.measures.filter(m => trim(m.name)).map(m => ({ name: m.name, score: '', prev: trim(m.score) || m.prev }));
   S = n;
-  setStep('subj', false);
+  setStep('session', false);
   toast('New session started');
 });
 
